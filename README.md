@@ -12,7 +12,7 @@ Also included is wsocat, a command line websocket client.
 Use go install to install slowserver and wsocat.
 
 ```sh
-$ go install github.com/jrwren/slowserver
+$ go install github.com/jrwren/slowserver/...
 ```
 
 In one shell run the server:
