@@ -25,8 +25,11 @@ func main() {
 	flag.Parse()
 
 	r := http.NewServeMux()
-	r.HandleFunc("/", slow)
+	r.HandleFunc("/", root)
 	r.HandleFunc("/slow", slow)
+	r.HandleFunc("/slam", slam)
+	r.HandleFunc("/slam/headers", headerSlam)
+	r.HandleFunc("/slam/body", bodySlam)
 	r.Handle("/ws-echo", websocket.Handler(echoServer))
 	r.Handle("/ws-pinger", websocket.Handler(pinger))
 	go func() {
@@ -38,6 +41,62 @@ func main() {
 		log.Fatal(err)
 	}()
 	log.Fatal(http.ListenAndServe(":"+strconv.FormatInt(int64(httpPort), 10), r))
+}
+
+func root(w http.ResponseWriter, r *http.Request) {
+	io.WriteString(w,`
+	Endpoints on this server:
+	/slow - responds slowly - accepts query params: chunk, delay, duration
+	/slam - closes the connection without writing headers or body - accepts query param: duration
+	/slam/headers - closes connection after writing headers - accepts query param: duration
+	/slam/body - closes connection after writing 1/2 the body - accepts query param: duration, len
+	/ws-echo - a websocket connection which echoes lines in response
+	/ws-pinger - a websocket connection which pings every 10s - accepts query param: delay
+	`)
+}
+
+// slam closes the connection without writing anything.
+func slam(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	t := timeQueryParam(r.Form, "duration", time.Duration(0))
+	time.Sleep(t)
+	panic("slam!")
+}
+
+// headerSlam writes some headers and then closes the connection before writing body.
+func headerSlam(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	t := timeQueryParam(r.Form, "duration", time.Duration(0))
+	time.Sleep(t)
+	w.Header().Add("Content-Type", "text")
+	w.Header().Add("Content-Length", "1024")
+	w.WriteHeader(200)
+}
+
+// bodySlam writes headers and then closes the connection before completely writing body.
+func bodySlam(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	t := timeQueryParam(r.Form, "duration", time.Duration(0))
+	l := r.Form.Get("len")
+	ll,err:=strconv.Atoi(l)
+	if err != nil {
+		if l != "" {
+			log.Print(err)
+		}
+		ll = 512
+	}
+
+	w.Header().Add("Content-Type", "text")
+	w.Header().Add("Content-Length", strconv.Itoa(ll*2))
+	w.WriteHeader(200)
+	time.Sleep(t)
+	f, err := os.Open("/usr/share/dict/words")
+	if err != nil {
+		log.Print("couldn't open /usr/share/dict/words")
+		return
+	}
+	defer f.Close()
+	io.Copy(w, io.LimitReader(f, int64(ll)))
 }
 
 func slow(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +171,9 @@ func echoServer(ws *websocket.Conn) {
 }
 
 func pinger(ws *websocket.Conn) {
+	r := ws.Request()
+	r.ParseForm()
+	delay := timeQueryParam(r.Form, "delay", 10*time.Second)
 	buf := make([]byte, 1500)
 	n := 0
 	for {
@@ -127,8 +189,7 @@ func pinger(ws *websocket.Conn) {
 		if br>0 {
 			log.Printf("pinger read: %s", buf[:br])
 		}
-		// This is probably terrible, but why not roll with it for now.
-		time.Sleep(10 * time.Second)
+		time.Sleep(delay)
 		n++
 		_, err = fmt.Fprintf(ws, "%d\n", n)
 		if err != nil {
