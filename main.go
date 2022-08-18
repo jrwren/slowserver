@@ -17,6 +17,7 @@ import (
 )
 
 func main() {
+	os.WriteFile("/run/app.pid", []byte(strconv.Itoa(os.Getpid())), os.ModePerm)
 	var httpPort, httpsPort int
 	var certfile string
 	flag.IntVar(&httpPort, "httpPort", 8080, "http listen port")
