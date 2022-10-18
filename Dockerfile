@@ -20,6 +20,7 @@ RUN openssl req \
     -out slowserver.crt  && \
   cat slowserver.crt slowserver.key > slowserver.pem && \
   cp slowserver.pem /certificates
+RUN apt update && apt install --no-install-recommends wamerican
 ADD run.sh /run.sh
 ADD env.sh /env.sh
 COPY --from=build /go/bin/slowserver /app
