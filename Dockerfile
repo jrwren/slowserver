@@ -6,7 +6,7 @@ COPY . slowserver
 #RUN git clone https://github.com/jrwren/slowserver.git &&\
 RUN   cd slowserver && go install .
 
-FROM cloud-apps-baser
+FROM ghcr.io/jrwren/cloud-apps-baser
 
 RUN openssl req \
     -nodes -newkey rsa:2048 \
