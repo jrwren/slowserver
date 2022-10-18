@@ -124,7 +124,11 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	}
 	src, dst := f, w
 	sz := int(st.Size())
-	chunk := sz / int(t/delay)
+	dd:=int(t/delay)
+	chunk := 10
+	if dd != 0 {
+		chunk = sz / dd
+	}
 	if c, err := strconv.ParseInt(r.Form.Get("chunk"), 10, 64); err == nil {
 		chunk = int(c)
 	} else {
