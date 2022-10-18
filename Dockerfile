@@ -23,3 +23,6 @@ RUN openssl req \
 ADD run.sh /run.sh
 ADD env.sh /env.sh
 COPY --from=build /go/bin/slowserver /app
+# --build-arg buildTime=$(printf '%(%s)T') or $(date +%s)
+ARG buildTime
+ENV buildTime=$buildTime
