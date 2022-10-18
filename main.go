@@ -45,7 +45,7 @@ func main() {
 }
 
 func root(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w,`
+	io.WriteString(w, `
 	Endpoints on this server:
 	/slow - responds slowly - accepts query params: chunk, delay, duration
 	/slam - closes the connection without writing headers or body - accepts query param: duration
@@ -79,7 +79,7 @@ func bodySlam(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	t := timeQueryParam(r.Form, "duration", time.Duration(0))
 	l := r.Form.Get("len")
-	ll,err:=strconv.Atoi(l)
+	ll, err := strconv.Atoi(l)
 	if err != nil {
 		if l != "" {
 			log.Print(err)
@@ -119,6 +119,7 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	st, err := f.Stat()
 	if err != nil {
 		log.Print("couldn't stat /usr/share/dict/words")
+		http.Error(w, "could not stat /usr/share/dict/words", 500)
 		return
 	}
 	src, dst := f, w
@@ -127,17 +128,17 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	if c, err := strconv.ParseInt(r.Form.Get("chunk"), 10, 64); err == nil {
 		chunk = int(c)
 	} else {
-		log.Print("failed to parse chunk query param",r.Form.Get("chunk"))
+		log.Print("failed to parse chunk query param", r.Form.Get("chunk"))
 	}
 	log.Printf("/slow writing %d every %s for %s", chunk, delay, t)
-	w.Header().Set("content-length", strconv.Itoa(sz))
+	// TODO: consider calculating correct content-length and setting it
+	if t == 5*time.Minute {
+		w.Header().Set("content-length", strconv.Itoa(sz))
+	}
 	buf := make([]byte, chunk)
 	start := time.Now()
 	// lifted from io:
 	for {
-		if time.Since(start) > t {
-			break
-		}
 		nr, er := src.Read(buf)
 		if nr > 0 {
 			nw, ew := dst.Write(buf[0:nr])
@@ -148,6 +149,9 @@ func slow(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			w.(http.Flusher).Flush()
+			if time.Since(start) > t {
+				break
+			}
 			time.Sleep(delay)
 			if ew != nil {
 				err = ew
@@ -188,10 +192,10 @@ func pinger(ws *websocket.Conn) {
 			if errors.Is(err, io.EOF) {
 				return
 			}
-			log.Printf("pinger read error: %s %T", err,err)
+			log.Printf("pinger read error: %s %T", err, err)
 			return
 		}
-		if br>0 {
+		if br > 0 {
 			log.Printf("pinger read: %s", buf[:br])
 		}
 		time.Sleep(delay)
