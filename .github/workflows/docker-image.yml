@@ -1,0 +1,24 @@
+
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build the Docker image
+      run: docker build . --build-arg buildTime=$(date +%s) --file Dockerfile --tag slowserver:$(date +%s)
+    - name: Build and publish a Docker image for ${{ github.repository }}
+      uses: macbre/push-to-ghcr@master
+      with:
+        image_name: ${{ github.repository }}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
