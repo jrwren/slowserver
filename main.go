@@ -132,8 +132,12 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	log.Printf("/slow writing %d every %s for %s", chunk, delay, t)
 	w.Header().Set("content-length", strconv.Itoa(sz))
 	buf := make([]byte, chunk)
+	start := time.Now()
 	// lifted from io:
 	for {
+		if time.Since(start) > t {
+			break
+		}
 		nr, er := src.Read(buf)
 		if nr > 0 {
 			nw, ew := dst.Write(buf[0:nr])

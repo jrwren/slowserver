@@ -2,8 +2,9 @@ FROM golang:1.19 as build
 
 WORKDIR /usr/src/app
 
-RUN git clone https://github.com/jrwren/slowserver.git &&\
-  cd slowserver && go install .
+COPY . slowserver
+#RUN git clone https://github.com/jrwren/slowserver.git &&\
+RUN   cd slowserver && go install .
 
 FROM cloud-apps-baser
 
@@ -20,4 +21,5 @@ RUN openssl req \
   cat slowserver.crt slowserver.key > slowserver.pem && \
   cp slowserver.pem /certificates
 ADD run.sh /run.sh
+ADD env.sh /env.sh
 COPY --from=build /go/bin/slowserver /app
