@@ -11,6 +11,7 @@ import (
 )
 
 func main() {
+	// TODO: Support disabling cert validation with -k.
 	flag.Parse()
 	url := flag.Arg(0)
 	origin := strings.Replace(url, "ws:", "http:", 1)

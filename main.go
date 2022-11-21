@@ -1,3 +1,5 @@
+// Copyright 2022 Cisco Inc. All Rights Reserved.
+
 package main
 
 import (
@@ -11,15 +13,19 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
+	xnws "golang.org/x/net/websocket"
 )
 
 func main() {
 	os.WriteFile("/run/app.pid", []byte(strconv.Itoa(os.Getpid())), os.ModePerm)
 	var httpPort, httpsPort int
 	var certfile string
+	var gosocket bool
+	flag.BoolVar(&gosocket, "gosocket", false, "serve websocket with golang.org/x/net/websocket insetad of ")
 	flag.IntVar(&httpPort, "httpPort", 8080, "http listen port")
 	flag.IntVar(&httpsPort, "httpsPort", 8443, "https listen port")
 	flag.StringVar(&certfile, "certfile", "", "certificate file for https")
@@ -31,8 +37,10 @@ func main() {
 	r.HandleFunc("/slam", slam)
 	r.HandleFunc("/slam/headers", headerSlam)
 	r.HandleFunc("/slam/body", bodySlam)
-	r.Handle("/ws-echo", websocket.Handler(echoServer))
-	r.Handle("/ws-pinger", websocket.Handler(pinger))
+	r.Handle("/gs-echo", xnws.Handler(echoServerXNWS))
+	r.Handle("/gs-pinger", xnws.Handler(pingerXNWS))
+	r.HandleFunc("/ws-echo", echoServer)
+	r.HandleFunc("/ws-pinger", pinger)
 	go func() {
 		if certfile == "" {
 			return
@@ -45,14 +53,17 @@ func main() {
 }
 
 func root(w http.ResponseWriter, r *http.Request) {
-	io.WriteString(w, `
-	Endpoints on this server:
+	io.WriteString(w, `Endpoints on this server:
 	/slow - responds slowly - accepts query params: chunk, delay, duration
 	/slam - closes the connection without writing headers or body - accepts query param: duration
 	/slam/headers - closes connection after writing headers - accepts query param: duration
 	/slam/body - closes connection after writing 1/2 the body - accepts query param: duration, len
 	/ws-echo - a websocket connection which echoes lines in response
 	/ws-pinger - a websocket connection which pings every 10s - accepts query param: delay
+	/gs-echo - a go websocket connection which echoes lines in response
+	/gs-pinger - a go websocket connection which pings every 10s - accepts query param: delay
+The /gs-echo and /gs-pinger endpoints use golang.org/x/net/websocket which does
+not use data framing as defined in RFC6455.
 	`)
 }
 
@@ -124,7 +135,7 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	}
 	src, dst := f, w
 	sz := int(st.Size())
-	dd:=int(t/delay)
+	dd := int(t / delay)
 	chunk := 10
 	if dd != 0 {
 		chunk = sz / dd
@@ -178,12 +189,61 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var upgrader = websocket.Upgrader{} // use default options
 // Echo the data received on the WebSocket.
-func echoServer(ws *websocket.Conn) {
+func echoServer(w http.ResponseWriter, r *http.Request) {
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print("upgrade:", err)
+		return
+	}
+	defer c.Close()
+	for {
+		mt, message, err := c.ReadMessage()
+		if err != nil {
+			log.Println("read:", err)
+			break
+		}
+		log.Printf("recv: %s", message)
+		err = c.WriteMessage(mt, message)
+		if err != nil {
+			log.Println("write:", err)
+			break
+		}
+	}
+}
+
+func pinger(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	delay := timeQueryParam(r.Form, "delay", 10*time.Second)
+	n := 0
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print("pinger upgrade:", err)
+		return
+	}
+	defer c.Close()
+	for {
+		// TODO: use c.PingHandler()
+		n++
+		err = c.WriteMessage(websocket.TextMessage,
+			[]byte(fmt.Sprintf("%d\n", n)))
+		if err != nil {
+			if !errors.Is(err, syscall.EPIPE) && err != io.ErrClosedPipe {
+				log.Printf("pinger write error: %s", err)
+			}
+			return
+		}
+		time.Sleep(delay)
+	}
+}
+
+// Echo the data received on the WebSocket.
+func echoServerXNWS(ws *xnws.Conn) {
 	io.Copy(ws, ws)
 }
 
-func pinger(ws *websocket.Conn) {
+func pingerXNWS(ws *xnws.Conn) {
 	r := ws.Request()
 	r.ParseForm()
 	delay := timeQueryParam(r.Form, "delay", 10*time.Second)
