@@ -52,6 +52,7 @@ Options:
   -k  Allow insecure connections when using TLS.
   -d  data to send on websocket.
   -D  data to send on websocket from file. For example, /home/user/file.txt or ./file.txt.
+  -connect-timeout  Connect (websocket handshake) timeout.
   -U  User-Agent, defaults to version "frieza/0.0.1".
   -v  Verbose output.
   -vv Very verbose output.
@@ -63,7 +64,7 @@ func main() {
 	var body, bodyFile, hostHeader, userAgent string
 	var resolve string
 	var conc, t, q int
-	var dur time.Duration
+	var dur, connectTimeout time.Duration
 	var k, h2, v, vv bool
 	flag.StringVar(&body, "d", "", "")
 	flag.StringVar(&bodyFile, "D", "", "")
@@ -78,6 +79,7 @@ func main() {
 	flag.BoolVar(&v, "v", false, "")
 	flag.BoolVar(&vv, "vv", false, "")
 	flag.BoolVar(&k, "k", false, "")
+	flag.DurationVar(&connectTimeout, "connect-timeout", 5*time.Second, "")
 
 	flag.StringVar(&resolve, "resolve", "", "")
 	flag.Usage = func() {
@@ -118,6 +120,7 @@ func main() {
 		vv:      vv,
 		header:  header,
 		k:       k,
+		ct:      connectTimeout,
 	}
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
@@ -151,6 +154,7 @@ type Work struct {
 	counters chan *counter
 	ao       *res.Override
 	dila     *websocket.Dialer
+	ct       time.Duration
 	header   http.Header
 	stopCh   chan struct{}
 }
@@ -194,7 +198,7 @@ func (w *Work) Start() {
 	w.stopCh = make(chan struct{}, w.C)
 	w.dila = &websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: w.ct,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: w.k,
 		},
@@ -206,7 +210,7 @@ func (w *Work) Start() {
 		// port := r[1]
 		addrs := r[2:]
 		w.ao = &res.Override{H: host, Addrs: addrs}
-		w.dila.NetDialContext = w.ao.Dial
+		w.dila.NetDialContext = w.ao.DialContext
 	}
 	w.started = time.Now()
 	var wg sync.WaitGroup
@@ -216,13 +220,14 @@ func (w *Work) Start() {
 			w.runWorker(i)
 			wg.Done()
 		}(i)
-		// This is a very naive attempt at CPS.
 		if i > 0 && i%w.CPS == 0 {
 			if w.verbose {
 				fmt.Println(i, "workers started")
 			}
-			time.Sleep(1 * time.Second)
 		}
+		// This is a very naive attempt at CPS.
+		// TODO: Ramp up better.
+		time.Sleep(time.Duration(1 * int(time.Second) / w.CPS))
 	}
 	if w.verbose {
 		fmt.Println(w.C, "workers started")
@@ -244,7 +249,12 @@ func (w *Work) runWorker(i int) {
 	if w.verbose {
 		log.Print("websocket ", i, " connected")
 	}
-	w.sockets <- ws
+	select {
+	// We could have been stopped already, during ramp up, so check.
+	case <-w.stopCh:
+		return
+	case w.sockets <- ws:
+	}
 	if w.SendData != "" {
 		ww, err := ws.NextWriter(websocket.BinaryMessage)
 		if err != nil {

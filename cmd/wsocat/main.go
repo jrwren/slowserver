@@ -20,6 +20,9 @@ import (
 func main() {
 	var resolve string
 	var k, b, useXNWS bool
+	var connectTimeout time.Duration
+	flag.DurationVar(&connectTimeout, "connect-timeout", 5*time.Second,
+		"Connect (websocket handshake) timeout.")
 	flag.StringVar(&resolve, "resolve", "", "<host:port:addr[,addr]...> Use custom addr to override DNS.")
 	flag.BoolVar(&useXNWS, "useXNWS", false, "Use golang.org/x/net/websocket for raw socket instead of data framing as defined in RFC6455.")
 	flag.BoolVar(&k, "k", false, "Allow insecure connections when using TLS.")
@@ -47,7 +50,7 @@ func main() {
 	}
 	dila := &websocket.Dialer{
 		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 5 * time.Second,
+		HandshakeTimeout: connectTimeout,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: k,
 		},
@@ -59,7 +62,7 @@ func main() {
 		// port := r[1]
 		addrs := r[2:]
 		ao := &res.Override{H: host, Addrs: addrs}
-		dila.NetDialContext = ao.Dial
+		dila.NetDialContext = ao.DialContext
 	}
 	ws, resp, err := dila.Dial(url, nil)
 	if err != nil {
@@ -82,7 +85,7 @@ func main() {
 		io.Copy(w, os.Stdin)
 	}()
 	for {
-		_, r, err:=ws.NextReader()
+		_, r, err := ws.NextReader()
 		if err != nil {
 			log.Fatal("fatal error getting reader:", err)
 		}

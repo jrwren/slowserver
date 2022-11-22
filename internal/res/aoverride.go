@@ -20,15 +20,16 @@ type Override struct {
 	seen  []string
 }
 
-// Dial is a terribly poorly written function which needs much love.
-func (as *Override) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+// DialContext is a terribly poorly written function which needs much love.
+func (as *Override) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	var d net.Dialer
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "aoverride SHP error:%v\n", err)
 		os.Exit(1)
 	}
 	if host != as.H {
-		c, err := net.Dial(network, address)
+		c, err := d.DialContext(ctx, network, address)
 		raddr := c.RemoteAddr()
 		if !slices.Contains(as.seen, raddr.String()) {
 			as.seen = append(as.seen, raddr.String())
@@ -46,7 +47,7 @@ func (as *Override) Dial(ctx context.Context, network, address string) (net.Conn
 	// trace.DNSDone(a, )
 	// So instead???
 
-	c, err := net.Dial(network, a)
+	c, err := d.DialContext(ctx, network, a)
 	if err != nil {
 		log.Println("aoverride dial error dialing ", network, " ", a, ":", err)
 	}
