@@ -16,30 +16,27 @@
 package main
 
 import (
-	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"golang.org/x/exp/slices"
+	"github.com/jrwren/slowserver/internal/res"
 )
 
 const (
 	headerRegexp = `^([\w-]+):\s*(.+)`
 	authRegexp   = `^(.+):([^\s].+)`
-	heyUA        = "frieza/0.0.1"
+	ua           = "frieza/0.0.1"
 )
 
 // Yes, ths is copied from hey, becuase it would be nice to use the same flags.
@@ -71,7 +68,7 @@ func main() {
 	flag.StringVar(&body, "d", "", "")
 	flag.StringVar(&bodyFile, "D", "", "")
 	flag.StringVar(&hostHeader, "host", "", "")
-	flag.StringVar(&userAgent, "U", "", "")
+	flag.StringVar(&userAgent, "U", ua, "")
 
 	flag.IntVar(&conc, "c", 50, "")
 	flag.IntVar(&q, "q", 0, "")
@@ -109,6 +106,7 @@ func main() {
 		}
 		header.Set(match[1], match[2])
 	}
+	header.Set("user-agent", userAgent)
 
 	w := &Work{
 		URL:     url,
@@ -151,7 +149,7 @@ type Work struct {
 	k        bool
 	sockets  chan *websocket.Conn
 	counters chan *counter
-	ao       *aoverride
+	ao       *res.Override
 	dila     *websocket.Dialer
 	header   http.Header
 	stopCh   chan struct{}
@@ -207,8 +205,8 @@ func (w *Work) Start() {
 		host := r[0]
 		// port := r[1]
 		addrs := r[2:]
-		w.ao = &aoverride{h: host, addrs: addrs}
-		w.dila.NetDialContext = w.ao.dial
+		w.ao = &res.Override{H: host, Addrs: addrs}
+		w.dila.NetDialContext = w.ao.Dial
 	}
 	w.started = time.Now()
 	var wg sync.WaitGroup
@@ -324,46 +322,4 @@ type counter struct {
 func (c *counter) Write(p []byte) (n int, err error) {
 	c.N += len(p)
 	return len(p), nil
-}
-
-// https://koraygocmen.medium.com/custom-dns-resolver-for-the-default-http-client-in-go-a1420db38a5d
-// and https://github.com/benburkert/dns/blob/d356cf78cdfc/init/init.go
-type aoverride struct {
-	addrs []string
-	n     int32
-	h     string
-	seen  []string
-}
-
-// dial is a terribly poorly written function which needs much love.
-func (as *aoverride) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "aoverride SHP error:%v\n", err)
-		os.Exit(1)
-	}
-	if host != as.h {
-		c, err := net.Dial(network, address)
-		raddr := c.RemoteAddr()
-		if !slices.Contains(as.seen, raddr.String()) {
-			as.seen = append(as.seen, raddr.String())
-			fmt.Fprintf(os.Stderr, "NO aoverride dial(%s,%s) for %s host=%s", network, address, as.h, host)
-			fmt.Fprintf(os.Stderr, "!! dialed %s\n", raddr)
-		}
-		return c, err
-	}
-	a := as.addrs[int(as.n)%len(as.addrs)] + ":" + port
-	atomic.AddInt32(&as.n, 1)
-	//fmt.Fprintf(os.Stderr, "aoverride dial %s %s using %s\n", network, address, a)
-
-	// I want to do this, but nettrace is internal :(
-	// trace, _ := ctx.Value(nettrace.TraceKey{}).(*nettrace.Trace)
-	// trace.DNSDone(a, )
-	// So instead???
-
-	c, err := net.Dial(network, a)
-	if err != nil {
-		log.Println("aoverride dial error dialing ", network, " ", a, ":", err)
-	}
-	return c, err
 }
