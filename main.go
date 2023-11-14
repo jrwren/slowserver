@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,23 +22,36 @@ import (
 	xnws "golang.org/x/net/websocket"
 )
 
+var (
+	conns []*Connection
+)
+
 func main() {
-	os.WriteFile("/run/app.pid", []byte(strconv.Itoa(os.Getpid())), os.ModePerm)
+	err := os.WriteFile("/run/app.pid", []byte(strconv.Itoa(os.Getpid())), os.ModePerm)
+	if err != nil {
+		log.Println("could not write /run/app.pid")
+	}
 	var httpPort, httpsPort int
-	var certfile string
+	var certfile, initconns string
 	var gosocket bool
 	flag.BoolVar(&gosocket, "gosocket", false, "serve websocket with golang.org/x/net/websocket insetad of ")
 	flag.IntVar(&httpPort, "httpPort", 8080, "http listen port")
 	flag.IntVar(&httpsPort, "httpsPort", 8443, "https listen port")
 	flag.StringVar(&certfile, "certfile", "", "certificate file for https")
+	// e.g. -initconns tcpbin.com:4242_35s_"ping\n"
+	// or www.example.net:80_25s_"GET / HTTP/1.1\r\nHost: %s\r\n\r\n"
+	flag.StringVar(&initconns, "initconns", "", "initial remote connections - comma separated host:port_delay_payload pairs")
 	flag.Parse()
-
+	doinitconns(initconns)
+	log.Print("initialized ", len(conns), " connections")
 	r := http.NewServeMux()
 	r.HandleFunc("/", root)
 	r.HandleFunc("/slow", slow)
 	r.HandleFunc("/slam", slam)
 	r.HandleFunc("/slam/headers", headerSlam)
 	r.HandleFunc("/slam/body", bodySlam)
+	r.HandleFunc("/connections", connections)
+	r.HandleFunc("/headers", headers)
 	r.Handle("/gs-echo", xnws.Handler(echoServerXNWS))
 	r.Handle("/gs-pinger", xnws.Handler(pingerXNWS))
 	r.HandleFunc("/ws-echo", echoServer)
@@ -45,7 +60,7 @@ func main() {
 		if certfile == "" {
 			return
 		}
-		err := http.ListenAndServeTLS(":"+strconv.FormatInt(int64(httpPort), 10),
+		err := http.ListenAndServeTLS(":"+strconv.FormatInt(int64(httpsPort), 10),
 			certfile, certfile, r)
 		log.Fatal(err)
 	}()
@@ -58,6 +73,8 @@ func root(w http.ResponseWriter, r *http.Request) {
 	/slam - closes the connection without writing headers or body - accepts query param: duration
 	/slam/headers - closes connection after writing headers - accepts query param: duration
 	/slam/body - closes connection after writing 1/2 the body - accepts query param: duration, len
+	/connections - list (GET) and create (POST) remote TCP connections
+	/headers - respond with headers sent as text body
 	/ws-echo - a websocket connection which echoes lines in response
 	/ws-pinger - a websocket connection which pings every 10s - accepts query param: delay
 	/gs-echo - a go websocket connection which echoes lines in response
@@ -109,6 +126,78 @@ func bodySlam(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	io.Copy(w, io.LimitReader(f, int64(ll)))
+}
+
+func headers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "text")
+	for i := range r.Header {
+		for _, v := range r.Header[i] {
+			io.WriteString(w, i)
+			io.WriteString(w, ": ")
+			io.WriteString(w, v)
+			io.WriteString(w, "\n")
+		}
+	}
+}
+
+func connections(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		connectionsGet(w, r)
+	case http.MethodPost:
+		connectionsPost(w, r)
+	case http.MethodDelete:
+		connectionsDelete(w, r)
+	}
+}
+
+// TODO: support more content types.
+func connectionsGet(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	long := strings.ToLower(r.FormValue("long"))
+	for i := range conns {
+		if i != 0 {
+			fmt.Fprintln(w)
+		}
+		c := conns[i]
+		fmt.Fprintf(w, "%d reconnects:%d totalRR:%d %s %s\n", i,
+			c.reconnects, c.totalRR, c.RemoteAddr(), c.LocalAddr())
+		switch {
+		case long == "true" || len(c.last_read) < 80:
+			fmt.Fprintf(w, "last read: %s\n", c.last_read)
+		default:
+			fmt.Fprintf(w, "last read: %s\n", c.last_read[0:80])
+		}
+		if c.err != nil {
+			fmt.Fprintf(w, "err: %v", c.err)
+			c.err = nil
+		}
+	}
+}
+
+func connectionsPost(w http.ResponseWriter, r *http.Request) {
+	buf := make([]byte, 1024)
+	n, err := r.Body.Read(buf)
+	if err != nil && err != io.EOF {
+		log.Printf("error reading request body %#v: %s", r, err)
+	}
+	addConnection(string(buf[0:n]))
+}
+
+func connectionsDelete(w http.ResponseWriter, r *http.Request) {
+	buf := make([]byte, 1024)
+	n, err := r.Body.Read(buf)
+	if err != nil && err != io.EOF {
+		log.Printf("error reading request body %#v: %s", r, err)
+	}
+	i, err := strconv.Atoi(string(buf[0:n]))
+	if err != nil {
+		log.Printf("error parsing request body %#v: %s", r, err)
+		http.Error(w, http.StatusText(http.StatusBadRequest),
+			http.StatusBadRequest)
+		return
+	}
+	rmConnection(i)
 }
 
 func slow(w http.ResponseWriter, r *http.Request) {
@@ -286,3 +375,124 @@ func timeQueryParam(v url.Values, name string, t time.Duration) time.Duration {
 
 // errInvalidWrite means that a write returned an impossible count.
 var errInvalidWrite = errors.New("invalid write result")
+
+// Connection is a net.Conn wrapped for our purpose
+type Connection struct {
+	net.Conn
+	err        error
+	last_read  string
+	addr       string
+	delay      time.Duration
+	reconnects int
+	totalRR    int // total request responses.
+	payload    string
+}
+
+func doinitconns(initconns string) {
+	points := strings.Split(initconns, ",")
+	for i := range points {
+		addConnection(points[i])
+	}
+}
+
+func addConnection(conndef string) error {
+	addr, after, found := strings.Cut(conndef, "_")
+	delay := time.Minute
+	payload := ""
+	if found {
+		ds, ps, _ := strings.Cut(after, "_")
+		d, err := time.ParseDuration(ds)
+		if err != nil {
+			log.Print("could not parse ", conndef, err)
+			return err
+		}
+		delay = d
+		payload = ps
+	}
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		log.Print("error connecting to", addr, err)
+		return err
+	}
+	// Do naive \r\n replacement. Sadly, no support for a literal.
+	payload = strings.ReplaceAll(payload, "\\n", "\n")
+	payload = strings.ReplaceAll(payload, "\\r", "\r")
+	conn := &Connection{
+		Conn:    c,
+		addr:    addr,
+		delay:   delay,
+		payload: payload,
+	}
+	i := len(conns)
+	conns = append(conns, conn)
+	log.Printf("parsed connection %#v", conn)
+	go connloop(i, conn)
+	return nil
+}
+
+func rmConnection(i int) error {
+	if i >= len(conns) {
+		return errors.ErrUnsupported
+	}
+	err := conns[i].Close()
+	if err != nil {
+		log.Printf("error closing conn %d %s", i, err)
+		// Intentionally not returning here because we must
+	}
+	// Use nil as sentinel that it has been removed.
+	conns[i].Conn = nil
+	conns = slices.Delete(conns, i, i+1)
+	return nil
+}
+
+func replaceConnection(i int) *Connection {
+	err := conns[i].Close()
+	if err != nil {
+		log.Printf("error closing conn %s", err)
+	}
+	c, err := net.Dial("tcp", conns[i].addr)
+	if err != nil {
+		log.Print("error connecting to", conns[i].addr, err)
+	}
+	conns[i] = &Connection{
+		Conn:       c,
+		err:        err,
+		addr:       conns[i].addr,
+		delay:      conns[i].delay,
+		reconnects: conns[i].reconnects + 1,
+		payload:    conns[i].payload,
+	}
+	return conns[i]
+}
+
+func connloop(i int, c *Connection) {
+	buffer := make([]byte, 1024)
+	for {
+		if c.Conn == nil {
+			log.Print("ending old loop", i, "no connection")
+			return
+		}
+		n, err := fmt.Fprintf(c, c.payload)
+		if err != nil {
+			log.Printf("error writing to %v: %v", c, err)
+			c.err = err
+			c = replaceConnection(i)
+			continue
+		}
+		if n == 0 {
+			log.Printf("error 2 writing to %v: write returned 0", c)
+			c.err =
+				fmt.Errorf("error 2 writing to %v: write returned 0", c)
+		}
+		n, err = c.Read(buffer)
+		if err != nil {
+			log.Printf("error reading from %v", err)
+			c.err = fmt.Errorf("error reading from %v: Read returned 0", c)
+			c = replaceConnection(i)
+			continue
+		}
+		c.last_read = string(buffer[0:n])
+		c.totalRR += 1
+		time.Sleep(c.delay)
+	}
+}
