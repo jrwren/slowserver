@@ -182,6 +182,7 @@ func connectionsPost(w http.ResponseWriter, r *http.Request) {
 		log.Printf("error reading request body %#v: %s", r, err)
 	}
 	addConnection(string(buf[0:n]))
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func connectionsDelete(w http.ResponseWriter, r *http.Request) {
