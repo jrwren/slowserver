@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/NYTimes/gziphandler"
 	"github.com/gorilla/websocket"
 	xnws "golang.org/x/net/websocket"
 )
@@ -45,17 +46,17 @@ func main() {
 	doinitconns(initconns)
 	log.Print("initialized ", len(conns), " connections")
 	r := http.NewServeMux()
-	r.HandleFunc("/", root)
-	r.HandleFunc("/slow", slow)
-	r.HandleFunc("/slam", slam)
-	r.HandleFunc("/slam/headers", headerSlam)
-	r.HandleFunc("/slam/body", bodySlam)
-	r.HandleFunc("/connections", connections)
-	r.HandleFunc("/headers", headers)
+	r.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(root)))
+	r.Handle("/slow", gziphandler.GzipHandler(http.HandlerFunc(slow)))
+	r.Handle("/slam", gziphandler.GzipHandler(http.HandlerFunc(slam)))
+	r.Handle("/slam/headers", gziphandler.GzipHandler(http.HandlerFunc(headerSlam)))
+	r.Handle("/slam/body", gziphandler.GzipHandler(http.HandlerFunc(bodySlam)))
+	r.Handle("/connections", gziphandler.GzipHandler(http.HandlerFunc(connections)))
+	r.Handle("/headers", gziphandler.GzipHandler(http.HandlerFunc(headers)))
 	r.Handle("/gs-echo", xnws.Handler(echoServerXNWS))
 	r.Handle("/gs-pinger", xnws.Handler(pingerXNWS))
-	r.HandleFunc("/ws-echo", echoServer)
-	r.HandleFunc("/ws-pinger", pinger)
+	r.Handle("/ws-echo", gziphandler.GzipHandler(http.HandlerFunc(echoServer)))
+	r.Handle("/ws-pinger", gziphandler.GzipHandler(http.HandlerFunc(pinger)))
 	go func() {
 		if certfile == "" {
 			return

@@ -6,4 +6,7 @@ require golang.org/x/net v0.0.0-20220802222814-0bcc04d9c69b
 
 require golang.org/x/exp v0.0.0-20221114191408-850992195362
 
-require github.com/gorilla/websocket v1.5.0
+require (
+	github.com/NYTimes/gziphandler v1.1.1
+	github.com/gorilla/websocket v1.5.0
+)
