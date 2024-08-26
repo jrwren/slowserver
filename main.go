@@ -1,8 +1,9 @@
-// Copyright 2022 Cisco Inc. All Rights Reserved.
+// Copyright (c) 2024 Jay R. Wren
 
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +22,9 @@ import (
 
 	"github.com/NYTimes/gziphandler"
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	xnws "golang.org/x/net/websocket"
 )
 
@@ -32,13 +37,14 @@ func main() {
 	if err != nil {
 		log.Println("could not write /run/app.pid")
 	}
+
 	var httpPort, httpsPort int
 	var certfile, initconns string
 	var gosocket bool
 	flag.BoolVar(&gosocket, "gosocket", false, "serve websocket with golang.org/x/net/websocket insetad of ")
 	flag.IntVar(&httpPort, "httpPort", 8080, "http listen port")
 	flag.IntVar(&httpsPort, "httpsPort", 8443, "https listen port")
-	flag.StringVar(&certfile, "certfile", "", "certificate file for https")
+	flag.StringVar(&certfile, "certfile", "", "certificate file for https (combined with key)")
 	// e.g. -initconns tcpbin.com:4242_35s_"ping\n"
 	// or www.example.net:80_25s_"GET / HTTP/1.1\r\nHost: %s\r\n\r\n"
 	flag.StringVar(&initconns, "initconns", "", "initial remote connections - comma separated host:port_delay_payload pairs")
@@ -46,6 +52,12 @@ func main() {
 	doinitconns(initconns)
 	log.Print("initialized ", len(conns), " connections")
 	r := http.NewServeMux()
+	// TODO: convert all of these handlers to InstrumentHandlerInFlight,
+	// InstrumentHandlerDuration, InstrumentHandlerCounter,
+	// InstrumentHandlerResponseSize chain
+	r.Handle("/metrics", promhttp.Handler())
+	r.Handle("/livez", http.HandlerFunc(livezreadyz))
+	r.Handle("/readyz", http.HandlerFunc(livezreadyz))
 	r.Handle("/", gziphandler.GzipHandler(http.HandlerFunc(root)))
 	r.Handle("/slow", gziphandler.GzipHandler(http.HandlerFunc(slow)))
 	r.Handle("/slam", gziphandler.GzipHandler(http.HandlerFunc(slam)))
@@ -57,15 +69,47 @@ func main() {
 	r.Handle("/gs-pinger", xnws.Handler(pingerXNWS))
 	r.Handle("/ws-echo", gziphandler.GzipHandler(http.HandlerFunc(echoServer)))
 	r.Handle("/ws-pinger", gziphandler.GzipHandler(http.HandlerFunc(pinger)))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	var tlsServer *http.Server
+	tlsAddr := ":" + strconv.FormatInt(int64(httpsPort), 10)
+	if certfile != "" {
+		tlsServer = &http.Server{Addr: tlsAddr,
+			Handler: r}
+		go func() {
+			log.Print("starting server on ", tlsAddr)
+			err := tlsServer.ListenAndServeTLS(certfile, certfile)
+			if err != nil {
+				log.Print("error from TLS server: ", err)
+			}
+		}()
+	}
+	addr := ":" + strconv.FormatInt(int64(httpPort), 10)
+	log.Print("starting server on ", addr)
+	server := &http.Server{Addr: addr, Handler: r}
 	go func() {
-		if certfile == "" {
-			return
+		<-ctx.Done()
+		log.Printf("got signal %v to shut down", os.Interrupt)
+		shutdownCtx := context.Background()
+		shutdownCtx, cancel := context.WithTimeout(shutdownCtx, 10*time.Second)
+		defer cancel()
+		go func() {
+			if tlsServer != nil {
+				err := tlsServer.Shutdown(shutdownCtx)
+				if err != nil {
+					log.Fatalf("error shutting down TLS http.Server: %v", err)
+				}
+			}
+		}()
+		err := server.Shutdown(shutdownCtx)
+		if err != nil {
+			log.Fatalf("error shutting down http.Server: %v", err)
 		}
-		err := http.ListenAndServeTLS(":"+strconv.FormatInt(int64(httpsPort), 10),
-			certfile, certfile, r)
-		log.Fatal(err)
 	}()
-	log.Fatal(http.ListenAndServe(":"+strconv.FormatInt(int64(httpPort), 10), r))
+	err = server.ListenAndServe()
+	if err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
 func root(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +119,7 @@ func root(w http.ResponseWriter, r *http.Request) {
 	/slam/headers - closes connection after writing headers - accepts query param: duration
 	/slam/body - closes connection after writing 1/2 the body - accepts query param: duration, len
 	/connections - list (GET) and create (POST) remote TCP connections
-	/headers - respond with headers sent as text body
+	/headers - respond with request headers sent as text body
 	/ws-echo - a websocket connection which echoes lines in response
 	/ws-pinger - a websocket connection which pings every 10s - accepts query param: delay
 	/gs-echo - a go websocket connection which echoes lines in response
@@ -203,6 +247,7 @@ func connectionsDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func slow(w http.ResponseWriter, r *http.Request) {
+	slow_req_metric.Inc()
 	// The slow return of this function is to take 5 minutes.
 	// We shall return ~1MB total. and use american english dictionary for fun.
 	f, err := os.Open("/usr/share/dict/words")
@@ -231,10 +276,12 @@ func slow(w http.ResponseWriter, r *http.Request) {
 	if dd != 0 {
 		chunk = sz / dd
 	}
-	if c, err := strconv.ParseInt(r.Form.Get("chunk"), 10, 64); err == nil {
-		chunk = int(c)
-	} else {
-		log.Print("failed to parse chunk query param", r.Form.Get("chunk"))
+	if r.Form.Has("chunk") {
+		if c, err := strconv.ParseInt(r.Form.Get("chunk"), 10, 64); err == nil {
+			chunk = int(c)
+		} else {
+			log.Print("failed to parse chunk query param", r.Form.Get("chunk"))
+		}
 	}
 	log.Printf("/slow writing %d every %s for %s", chunk, delay, t)
 	// TODO: consider calculating correct content-length and setting it
@@ -391,6 +438,9 @@ type Connection struct {
 }
 
 func doinitconns(initconns string) {
+	if initconns == "" {
+		return
+	}
 	points := strings.Split(initconns, ",")
 	for i := range points {
 		addConnection(points[i])
@@ -413,7 +463,7 @@ func addConnection(conndef string) error {
 	}
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
-		log.Print("error connecting to", addr, err)
+		log.Print("error connecting: ", addr, err)
 		return err
 	}
 	// Do naive \r\n replacement. Sadly, no support for a literal.
@@ -425,6 +475,7 @@ func addConnection(conndef string) error {
 		delay:   delay,
 		payload: payload,
 	}
+	cur_conn_metric.Inc()
 	i := len(conns)
 	conns = append(conns, conn)
 	log.Printf("parsed connection %#v", conn)
@@ -441,6 +492,7 @@ func rmConnection(i int) error {
 		log.Printf("error closing conn %d %s", i, err)
 		// Intentionally not returning here because we must
 	}
+	cur_conn_metric.Dec()
 	// Use nil as sentinel that it has been removed.
 	conns[i].Conn = nil
 	conns = slices.Delete(conns, i, i+1)
@@ -497,4 +549,24 @@ func connloop(i int, c *Connection) {
 		c.totalRR += 1
 		time.Sleep(c.delay)
 	}
+}
+
+var (
+	slow_req_metric = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "slowserver_processed_slow_req_total",
+		Help: "The total number of /slow requests",
+	})
+
+	cur_conn_metric = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "slowserver_cur_conn",
+		Help: "The current number of tracked connections (/connection)",
+	})
+)
+
+func livezreadyz(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	if r.Form.Has("verbose") { // 😀
+		io.WriteString(w, "READY OK")
+	}
+	io.WriteString(w, "OK")
 }
