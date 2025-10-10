@@ -42,4 +42,4 @@ The latest image is published to GitHub Container Registry:
 
 `ghcr.io/jrwren/slowserver:latest`
 
-[View on GHCR](https://github.com/users/jrwren/pkgs/container/slowserver)
+[View on GHCR](https://github.com/jrwren/slowserver/pkgs/container/slowserver)
