@@ -33,7 +33,7 @@ wsocat ws://localhost:8080/ws-pinger
 docker run `ghcr.io/jrwren/slowserver:latest`
 ```
 
-![Docker Build & Push](https://github.com/jrwren/slowserver/actions/workflows/docker.yml/badge.svg)
+![Docker Build & Push](https://github.com/jrwren/slowserver/actions/workflows/docker-image.yml/badge.svg)
 
 ## Docker Image
 
