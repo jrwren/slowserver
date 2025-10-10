@@ -26,3 +26,19 @@ Then run wsocat to connect to it:
 ```sh
 wsocat ws://localhost:8080/ws-pinger
 ```
+
+## Running via Docker
+
+```
+docker run `ghcr.io/jrwren/slowserver:latest`
+```
+
+![Docker Build & Push](https://github.com/jrwren/slowserver/actions/workflows/docker.yml/badge.svg)
+
+## Docker Image
+
+The latest image is published to GitHub Container Registry:
+
+`ghcr.io/jrwren/slowserver:latest`
+
+[View on GHCR](https://github.com/users/jrwren/packages/container/slowserver)
