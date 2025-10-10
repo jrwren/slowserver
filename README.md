@@ -29,8 +29,9 @@ wsocat ws://localhost:8080/ws-pinger
 
 ## Running via Docker
 
-```
-docker run `ghcr.io/jrwren/slowserver:latest`
+```sh
+docker pull ghcr.io/jrwren/slowserver:latest
+docker run --name slowserver ghcr.io/jrwren/slowserver:latest
 ```
 
 ![Docker Build & Push](https://github.com/jrwren/slowserver/actions/workflows/docker-image.yml/badge.svg)
@@ -41,4 +42,4 @@ The latest image is published to GitHub Container Registry:
 
 `ghcr.io/jrwren/slowserver:latest`
 
-[View on GHCR](https://github.com/users/jrwren/packages/container/slowserver)
+[View on GHCR](https://github.com/users/jrwren/pkgs/container/slowserver)
