@@ -1,24 +1,33 @@
-
-name: Docker Image CI
+name: Build and Publish Docker Image
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches:
+      - main  # or your default branch
+  workflow_dispatch:
 
 jobs:
-
-  build:
-
+  build-and-push:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: write  # Required to push to GHCR
+
     steps:
-    - uses: actions/checkout@v3
-    - name: Build the Docker image
-      run: docker build . --build-arg buildTime=$(date +%s) --file Dockerfile --tag slowserver:$(date +%s)
-    - name: Build and publish a Docker image for ${{ github.repository }}
-      uses: macbre/push-to-ghcr@master
-      with:
-        image_name: ${{ github.repository }}
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/slowserver:latest
